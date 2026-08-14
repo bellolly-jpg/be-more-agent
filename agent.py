@@ -693,17 +693,81 @@ class BotGUI:
             
         return self.save_audio_buffer(buffer, filename, samplerate)
 
-    def save_audio_buffer(self, buffer, filename, samplerate=16000):
-        if not buffer: return None
-        audio_data = np.concatenate(buffer, axis=0).flatten()
-        audio_data = np.nan_to_num(audio_data, nan=0.0, posinf=0.0, neginf=0.0)
-        audio_data = (audio_data * 32767).astype(np.int16)
+            def record_voice_adaptive(self, filename="input.wav"):
+        print("Recording from USB microphone...", flush=True)
+
+        RATE = 16000
+        CHANNELS = 1
+        alsa_device = "plughw:4,0"
+
+        print(f"[AUDIO] Recording from {alsa_device}", flush=True)
+
+        process = subprocess.Popen(
+            [
+                "arecord",
+                "-D", alsa_device,
+                "-f", "S16_LE",
+                "-c", str(CHANNELS),
+                "-r", str(RATE),
+                "-t", "raw",
+                "-q"
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            bufsize=0
+        )
+
+        audio_data = bytearray()
+        start_time = time.time()
+        last_sound_time = start_time
+
+        try:
+            while True:
+                data = process.stdout.read(3200)
+
+                if not data:
+                    break
+
+                audio_data.extend(data)
+
+                samples = np.frombuffer(data, dtype=np.int16)
+
+                if len(samples):
+                    volume = np.max(np.abs(samples))
+
+                    if volume > 500:
+                        last_sound_time = time.time()
+
+                if time.time() - start_time > 30:
+                    break
+
+                if time.time() - last_sound_time > 1.5:
+                    break
+
+        finally:
+            try:
+                process.terminate()
+                process.wait(timeout=1)
+            except Exception:
+                try:
+                    process.kill()
+                except Exception:
+                    pass
+
+        if not audio_data:
+            print("[AUDIO] No audio recorded.", flush=True)
+            return None
+
         with wave.open(filename, "wb") as wf:
             wf.setnchannels(1)
             wf.setsampwidth(2)
-            wf.setframerate(samplerate)
-            wf.writeframes(audio_data.tobytes())
+            wf.setframerate(RATE)
+            wf.writeframes(bytes(audio_data))
+
+        print(f"[AUDIO] Saved recording to {filename}", flush=True)
+
         self.play_sound(self.get_random_sound(ack_sounds_dir))
+
         return filename
 
     def transcribe_audio(self, filename):
