@@ -615,27 +615,118 @@ class BotGUI:
         
         return "WAKE"
 
-    def _listen_loop(self, stream_args, input_chunk_size, target_chunk_size, use_resampling):
-        # Force software backend (no mmap) via environment variable if possible, 
-        # but here we can try to hint loop settings.
-        # However, the most effective fix for ALSA mmap issues is often just asking for 'blocksize=0' 
-        # and letting portaudio manage the buffering, OR very small chunks.
-        
-        # Let's try to be less aggressive with reads.
-        
-         with sd.InputStream(**stream_args) as stream:
-                print(f"[AUDIO] Listening with rate {stream_args['samplerate']} and block {stream_args['blocksize']}", flush=True)
-                
-                # Pre-allocate buffer for speed
-                # If blocksize is 0, we read what is available.
-                
-                while True:
-                    if self.ptt_event.is_set():
-                        self.ptt_event.clear()
-                        raise StopIteration("PTT")
+        def _listen_loop(self, stream_args, input_chunk_size, target_chunk_size, use_resampling):
+        """
+        Wake-word listener using ALSA arecord instead of sounddevice.
+        This bypasses the PortAudio buffer-overflow problem.
+        """
 
-                    rlist, _, _ = select.select([sys.stdin], [], [], 0.001)
-                    if rlist: 
+        RATE = 16000
+        CHANNELS = 1
+        SAMPLE_WIDTH = 2  # 16-bit audio = 2 bytes
+        BYTES_PER_CHUNK = target_chunk_size * SAMPLE_WIDTH
+
+        # Your USB microphone is ALSA hw:4,0
+        alsa_device = "plughw:4,0"
+
+        print(f"[AUDIO] Starting ALSA microphone: {alsa_device}", flush=True)
+
+        process = subprocess.Popen(
+            [
+                "arecord",
+                "-D", alsa_device,
+                "-f", "S16_LE",
+                "-c", str(CHANNELS),
+                "-r", str(RATE),
+                "-t", "raw",
+                "-q"
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            bufsize=0
+        )
+
+        try:
+            print("[AUDIO] Listening for wake word...", flush=True)
+
+            while True:
+
+                # Physical/software PTT
+                if self.ptt_event.is_set():
+                    self.ptt_event.clear()
+                    raise StopIteration("PTT")
+
+                # Keyboard input
+                rlist, _, _ = select.select([sys.stdin], [], [], 0.001)
+
+                if rlist:
+                    sys.stdin.readline()
+                    raise StopIteration("CLI")
+
+                # Read exactly one 1280-sample chunk
+                data = process.stdout.read(BYTES_PER_CHUNK)
+
+                if not data or len(data) < BYTES_PER_CHUNK:
+                    raise RuntimeError(
+                        f"ALSA microphone stopped. Received {len(data)} bytes."
+                    )
+
+                audio_data = np.frombuffer(
+                    data,
+                    dtype=np.int16
+                )
+
+                # Make absolutely sure OpenWakeWord receives
+                # exactly 1280 samples.
+                if len(audio_data) > target_chunk_size:
+                    audio_data = audio_data[:target_chunk_size]
+
+                elif len(audio_data) < target_chunk_size:
+                    continue
+
+                # Check microphone volume
+                current_max = np.max(np.abs(audio_data))
+
+                # Only run the neural network when there is actual sound
+                if current_max > 200:
+
+                    self.oww_model.predict(audio_data)
+
+                    for mdl in self.oww_model.prediction_buffer.keys():
+
+                        score = list(
+                            self.oww_model.prediction_buffer[mdl]
+                        )[-1]
+
+                        if score > 0.1:
+                            print(
+                                f"\r[Oww] Score: {score:.3f} | "
+                                f"Vol: {current_max}   ",
+                                end="",
+                                flush=True
+                            )
+
+                        if score > WAKE_WORD_THRESHOLD:
+
+                            print(
+                                f"\n[WAKE] Triggered on '{mdl}' "
+                                f"with score: {score:.2f}",
+                                flush=True
+                            )
+
+                            self.oww_model.reset()
+                            return
+
+        finally:
+            # Always stop arecord when the listener exits
+            try:
+                process.terminate()
+                process.wait(timeout=1)
+            except Exception:
+                try:
+                    process.kill()
+                except Exception:
+                    pass
                         sys.stdin.readline()
                         raise StopIteration("CLI")
 
