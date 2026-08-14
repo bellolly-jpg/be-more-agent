@@ -594,7 +594,7 @@ class BotGUI:
         SAMPLE_WIDTH = 2
         BYTES_PER_CHUNK = 1280 * SAMPLE_WIDTH
 
-        alsa_device = "plughw:4,0"
+        alsa_device = "plughw:3,0"
 
         print(f"[AUDIO] Starting ALSA microphone: {alsa_device}", flush=True)
 
@@ -698,7 +698,7 @@ class BotGUI:
 
         RATE = 16000
         CHANNELS = 1
-        alsa_device = "plughw:4,0"
+        alsa_device = "plughw:3,0"
 
         print(f"[AUDIO] Recording from {alsa_device}", flush=True)
 
