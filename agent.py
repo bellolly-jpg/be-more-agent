@@ -562,11 +562,12 @@ class BotGUI:
         self.play_sound(self.get_random_sound(greeting_sounds_dir))
         print("Models loaded.", flush=True)
 
-    def detect_wake_word_or_ptt(self):
+        def detect_wake_word_or_ptt(self):
         self.set_state(BotStates.IDLE, "Waiting...")
         self.ptt_event.clear()
-        
-        if self.oww_model: self.oww_model.reset()
+
+        if self.oww_model:
+            self.oww_model.reset()
 
         if self.oww_model is None:
             self.ptt_event.wait()
@@ -574,58 +575,25 @@ class BotGUI:
             return "PTT"
 
         CHUNK_SIZE = 1280
-        OWW_SAMPLE_RATE = 16000
 
-        input_rate = choose_input_samplerate(INPUT_DEVICE_NAME, CURRENT_CONFIG.get("input_sample_rate"))
-        use_resampling = (input_rate != OWW_SAMPLE_RATE)
-        input_chunk_size = int(CHUNK_SIZE * (input_rate / OWW_SAMPLE_RATE)) if use_resampling else CHUNK_SIZE
-
-        stream_args = {
-            "samplerate": input_rate, 
-            "channels": 1, 
-            "dtype": 'int16', 
-            "blocksize": input_chunk_size, 
-            "device": INPUT_DEVICE_NAME
-        }
-
-        # Try to find a compatible block size and sample rate
         try:
-            # First attempt: standard settings
-            self._listen_loop(stream_args, input_chunk_size, CHUNK_SIZE, use_resampling)
+            self._listen_loop()
         except StopIteration as si:
             return str(si)
         except Exception as e:
-            print(f"[AUDIO] Stream failed with defaults: {e}. Retrying with loose settings...", flush=True)
-            try:
-                # Second attempt: Let PortAudio decide blocksize (0) and latency
-                stream_args["blocksize"] = 0 
-                stream_args["latency"] = "high"
-                # If blocksize is variable, we must read specific amounts manually or handle buffering.
-                # Simplest fallback: Just attempt small fixed block
-                stream_args["blocksize"] = 1024
-                use_resampling = True
-                
-                self._listen_loop(stream_args, 1024, CHUNK_SIZE, use_resampling)
-            except StopIteration as si:
-                return str(si)
-            except Exception as e2:
-                print(f"[CRITICAL] Wake Word Stream Error: {e2}")
-                self.ptt_event.wait()
-                return "PTT"
-        
-        return "WAKE"
+            print(f"[AUDIO] Wake-word listener error: {e}", flush=True)
+            self.ptt_event.wait()
+            self.ptt_event.clear()
+            return "PTT"
 
-        def _listen_loop(self, stream_args, input_chunk_size, target_chunk_size, use_resampling):
-            """Wake-word listener using ALSA arecord instead of sounddevice.
-        This bypasses the PortAudio buffer-overflow problem.
-        """
+    def _listen_loop(self):
+        """Listen to the same ALSA microphone used by the wake word."""
 
         RATE = 16000
         CHANNELS = 1
-        SAMPLE_WIDTH = 2  # 16-bit audio = 2 bytes
-        BYTES_PER_CHUNK = target_chunk_size * SAMPLE_WIDTH
+        SAMPLE_WIDTH = 2
+        BYTES_PER_CHUNK = 1280 * SAMPLE_WIDTH
 
-        # Your USB microphone is ALSA hw:4,0
         alsa_device = "plughw:4,0"
 
         print(f"[AUDIO] Starting ALSA microphone: {alsa_device}", flush=True)
@@ -649,20 +617,10 @@ class BotGUI:
             print("[AUDIO] Listening for wake word...", flush=True)
 
             while True:
-
-                # Physical/software PTT
                 if self.ptt_event.is_set():
                     self.ptt_event.clear()
                     raise StopIteration("PTT")
 
-                # Keyboard input
-                rlist, _, _ = select.select([sys.stdin], [], [], 0.001)
-
-                if rlist:
-                    sys.stdin.readline()
-                    raise StopIteration("CLI")
-
-                # Read exactly one 1280-sample chunk
                 data = process.stdout.read(BYTES_PER_CHUNK)
 
                 if not data or len(data) < BYTES_PER_CHUNK:
@@ -670,29 +628,17 @@ class BotGUI:
                         f"ALSA microphone stopped. Received {len(data)} bytes."
                     )
 
-                audio_data = np.frombuffer(
-                    data,
-                    dtype=np.int16
-                )
+                audio_data = np.frombuffer(data, dtype=np.int16)
 
-                # Make absolutely sure OpenWakeWord receives
-                # exactly 1280 samples.
-                if len(audio_data) > target_chunk_size:
-                    audio_data = audio_data[:target_chunk_size]
-
-                elif len(audio_data) < target_chunk_size:
+                if len(audio_data) != 1280:
                     continue
 
-                # Check microphone volume
                 current_max = np.max(np.abs(audio_data))
 
-                # Only run the neural network when there is actual sound
                 if current_max > 200:
-
                     self.oww_model.predict(audio_data)
 
                     for mdl in self.oww_model.prediction_buffer.keys():
-
                         score = list(
                             self.oww_model.prediction_buffer[mdl]
                         )[-1]
@@ -706,7 +652,6 @@ class BotGUI:
                             )
 
                         if score > WAKE_WORD_THRESHOLD:
-
                             print(
                                 f"\n[WAKE] Triggered on '{mdl}' "
                                 f"with score: {score:.2f}",
@@ -717,7 +662,6 @@ class BotGUI:
                             return
 
         finally:
-            # Always stop arecord when the listener exits
             try:
                 process.terminate()
                 process.wait(timeout=1)
@@ -726,105 +670,6 @@ class BotGUI:
                     process.kill()
                 except Exception:
                     pass
-            sys.stdin.readline()
-            raise StopIteration("CLI")
-
-                    # If fallback mode (blocksize 0), read fixed amount
-                    read_size = input_chunk_size
-                    if stream_args.get('blocksize') == 0:
-                        read_size = 1024 # Safe small read
-                    
-                    try:
-                        data, overflow = stream.read(read_size)
-                        if overflow:
-                            print("!", end="", flush=True) 
-                            # If we overflow excessively, raise error to trigger fallback to SAFE MODE (PulseAudio/Software)
-                            # We can use a simple counter attached to the function or object, but here raising immediately 
-                            # after a few in a row is safest.
-                            raise RuntimeError("Audio Buffer Overflow - Triggering Safe Mode")
-                    except Exception as e:
-                        # Convert uncatchable PaErrorCode wrapper to standard Exception if needed
-                        # But honestly, `raise e` should work... unless it's a SystemExit?
-                        # Let's wrap it in a new exception to be sure it bubbles up
-                        raise RuntimeError(f"Audio read failed: {e}")
-
-                    audio_data = np.frombuffer(data, dtype=np.int16)
-
-                    # Ensure flattening for openwakeword compatibility
-                    if audio_data.ndim > 1:
-                        audio_data = audio_data.flatten()
-
-                    if use_resampling:
-                        # FAST RESAMPLING: Nearest-neighbor slicing instead of scipy.signal.resample
-                        # This avoids the CPU bottleneck that causes overflow (!!!!!!!) on Raspberry Pi
-                        step = len(audio_data) / target_chunk_size
-                        indices = np.arange(0, len(audio_data), step)[:target_chunk_size].astype(int)
-                        audio_data = audio_data[indices]
-                    
-                    # Convert to float for model prediction without needing heavy resampling logic
-                    # The wake word model needs 16000, which we just faked above.
-                    
-                    # Debug volume occasionally
-                    current_max = np.max(np.abs(audio_data))
-                    
-                    # Only predict if volume is significant to save CPU
-                    if current_max > 200: 
-                        prediction = self.oww_model.predict(audio_data)
-                        for mdl in self.oww_model.prediction_buffer.keys():
-                            score = list(self.oww_model.prediction_buffer[mdl])[-1]
-                            if score > 0.1: # Show potential triggers
-                                print(f"\r[Oww] Score: {score:.3f} | Vol: {current_max}   ", end="", flush=True)
-
-                            if score > WAKE_WORD_THRESHOLD:
-                                print(f"\n[WAKE] Triggered on '{mdl}' with score: {score:.2f}", flush=True)
-                                self.oww_model.reset() 
-                                return # Success
-
-
-    def record_voice_adaptive(self, filename="input.wav"):
-        print("Recording (Adaptive)...", flush=True)
-        time.sleep(0.5) 
-        samplerate = choose_input_samplerate(INPUT_DEVICE_NAME, CURRENT_CONFIG.get("input_sample_rate"))
-
-        silence_threshold = 0.006
-        silence_duration = 1.5
-        max_record_time = 30.0
-        buffer = []
-        silent_chunks = 0
-        chunk_duration = 0.05 
-        chunk_size = int(samplerate * chunk_duration)
-        
-        num_silent_chunks = int(silence_duration / chunk_duration)
-        max_chunks = int(max_record_time / chunk_duration)
-        recorded_chunks = 0
-        silence_started = False
-
-        def callback(indata, frames, time_info, status):
-            nonlocal silent_chunks, recorded_chunks, silence_started
-            volume_norm = np.linalg.norm(indata) / np.sqrt(len(indata))
-            buffer.append(indata.copy())  
-            recorded_chunks += 1
-            if recorded_chunks < 5: return 
-            if volume_norm < silence_threshold:
-                silent_chunks += 1
-                if silent_chunks >= num_silent_chunks: silence_started = True
-            else: silent_chunks = 0
-
-        try:
-            # Explicitly close stream if it exists to free hardware
-            sd.stop()
-            time.sleep(0.2)
-            
-            with sd.InputStream(samplerate=samplerate, channels=1, callback=callback, 
-                                device=INPUT_DEVICE_NAME, blocksize=chunk_size): 
-                while not silence_started and recorded_chunks < max_chunks:
-                    sd.sleep(int(chunk_duration * 1000))
-        except Exception as e: 
-            print(f"[AUDIO ERROR] Adaptive Recording Failed: {e}", flush=True)
-            return None 
-        
-        return self.save_audio_buffer(buffer, filename, samplerate)
-
     def record_voice_ptt(self, filename="input.wav"):
         print("Recording (PTT)...", flush=True)
         time.sleep(0.5)
