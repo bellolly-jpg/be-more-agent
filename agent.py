@@ -616,8 +616,7 @@ class BotGUI:
         return "WAKE"
 
         def _listen_loop(self, stream_args, input_chunk_size, target_chunk_size, use_resampling):
-        """
-        Wake-word listener using ALSA arecord instead of sounddevice.
+            """Wake-word listener using ALSA arecord instead of sounddevice.
         This bypasses the PortAudio buffer-overflow problem.
         """
 
