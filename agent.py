@@ -726,8 +726,8 @@ class BotGUI:
                     process.kill()
                 except Exception:
                     pass
-                        sys.stdin.readline()
-                        raise StopIteration("CLI")
+            sys.stdin.readline()
+            raise StopIteration("CLI")
 
                     # If fallback mode (blocksize 0), read fixed amount
                     read_size = input_chunk_size
