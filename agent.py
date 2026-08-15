@@ -562,92 +562,25 @@ class BotGUI:
         self.play_sound(self.get_random_sound(greeting_sounds_dir))
         print("Models loaded.", flush=True)
 
-            def detect_wake_word_or_ptt(self):
+               def detect_wake_word_or_ptt(self):
         self.set_state(BotStates.IDLE, "Waiting...")
         self.ptt_event.clear()
 
         if self.oww_model:
             self.oww_model.reset()
 
-        CHUNK_SIZE = 1280
-        RATE = 16000
-        CHANNELS = 1
-        SAMPLE_WIDTH = 2
-        BYTES_PER_CHUNK = CHUNK_SIZE * SAMPLE_WIDTH
-
-        alsa_device = "plughw:3,0"
-
-        print(f"[AUDIO] Starting ALSA wake-word listener on {alsa_device}", flush=True)
-
-        process = subprocess.Popen(
-            [
-                "arecord",
-                "-D", alsa_device,
-                "-f", "S16_LE",
-                "-c", "1",
-                "-r", str(RATE),
-                "-t", "raw",
-                "-q"
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            bufsize=0
-        )
-
         try:
-            print("[AUDIO] Listening for wake word...", flush=True)
+            self._listen_loop()
+            return "WAKE"
 
-            while True:
-                if self.ptt_event.is_set():
-                    self.ptt_event.clear()
-                    return "PTT"
+        except StopIteration as e:
+            return str(e)
 
-                data = process.stdout.read(BYTES_PER_CHUNK)
-
-                if not data or len(data) < BYTES_PER_CHUNK:
-                    continue
-
-                audio_data = np.frombuffer(data, dtype=np.int16)
-
-                if len(audio_data) != CHUNK_SIZE:
-                    continue
-
-                volume = np.max(np.abs(audio_data))
-
-                if volume > 200 and self.oww_model:
-                    self.oww_model.predict(audio_data)
-
-                    for mdl in self.oww_model.prediction_buffer.keys():
-                        score = list(
-                            self.oww_model.prediction_buffer[mdl]
-                        )[-1]
-
-                        if score > 0.1:
-                            print(
-                                f"\r[Oww] Score: {score:.3f} | Vol: {volume}",
-                                end="",
-                                flush=True
-                            )
-
-                        if score > WAKE_WORD_THRESHOLD:
-                            print(
-                                f"\n[WAKE] Triggered on '{mdl}' "
-                                f"with score {score:.2f}",
-                                flush=True
-                            )
-
-                            self.oww_model.reset()
-                            return "WAKE"
-
-        finally:
-            try:
-                process.terminate()
-                process.wait(timeout=1)
-            except Exception:
-                try:
-                    process.kill()
-                except Exception:
-                    pass
+        except Exception as e:
+            print(f"[AUDIO] Wake word listener error: {e}", flush=True)
+            self.ptt_event.wait()
+            self.ptt_event.clear()
+            return "PTT"
 
     def _listen_loop(self):
         """Listen to the same ALSA microphone used by the wake word."""
