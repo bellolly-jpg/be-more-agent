@@ -670,44 +670,25 @@ class BotGUI:
                     process.kill()
                 except Exception:
                     pass
-    def record_voice_ptt(self, filename="input.wav"):
-        print("Recording (PTT)...", flush=True)
-        time.sleep(0.5)
-        samplerate = choose_input_samplerate(INPUT_DEVICE_NAME, CURRENT_CONFIG.get("input_sample_rate"))
-
-        buffer = []
-        def callback(indata, frames, time_info, status): buffer.append(indata.copy())
-        
-        try:
-            # Explicitly close stream if it exists to free hardware
-            # This is critical on Pi 5 where hardware contention causes freezes
-            sd.stop() 
-            time.sleep(0.2)
-            
-            with sd.InputStream(samplerate=samplerate, channels=1, callback=callback, device=INPUT_DEVICE_NAME):
-                while self.recording_active.is_set(): 
-                    sd.sleep(50)
-        except Exception as e: 
-            print(f"[AUDIO ERROR] PTT Recording Failed: {e}", flush=True)
-            return None
-            
-        return self.save_audio_buffer(buffer, filename, samplerate)
-
-            def record_voice_adaptive(self, filename="input.wav"):
-        print("Recording from USB microphone...", flush=True)
+        def record_voice_adaptive(self, filename="input.wav"):
+        print("Recording (ALSA)...", flush=True)
 
         RATE = 16000
         CHANNELS = 1
-        alsa_device = "plughw:3,0"
+        SAMPLE_WIDTH = 2
+        CHUNK_SIZE = 800
+        SILENCE_THRESHOLD = 500
+        SILENCE_DURATION = 1.5
+        MAX_RECORD_TIME = 10.0
 
-        print(f"[AUDIO] Recording from {alsa_device}", flush=True)
+        alsa_device = "plughw:3,0"
 
         process = subprocess.Popen(
             [
                 "arecord",
                 "-D", alsa_device,
                 "-f", "S16_LE",
-                "-c", str(CHANNELS),
+                "-c", "1",
                 "-r", str(RATE),
                 "-t", "raw",
                 "-q"
@@ -717,32 +698,57 @@ class BotGUI:
             bufsize=0
         )
 
-        audio_data = bytearray()
-        start_time = time.time()
-        last_sound_time = start_time
+        audio_chunks = []
+        silent_time = 0
+        total_time = 0
 
         try:
-            while True:
-                data = process.stdout.read(3200)
+            print("[AUDIO] Recording from USB microphone...", flush=True)
+
+            while total_time < MAX_RECORD_TIME:
+
+                data = process.stdout.read(CHUNK_SIZE * SAMPLE_WIDTH)
 
                 if not data:
                     break
 
-                audio_data.extend(data)
+                audio = np.frombuffer(data, dtype=np.int16)
+                audio_chunks.append(audio.copy())
 
-                samples = np.frombuffer(data, dtype=np.int16)
+                volume = np.max(np.abs(audio)) if len(audio) else 0
 
-                if len(samples):
-                    volume = np.max(np.abs(samples))
+                chunk_time = len(audio) / RATE
+                total_time += chunk_time
 
-                    if volume > 500:
-                        last_sound_time = time.time()
+                if volume < SILENCE_THRESHOLD:
+                    silent_time += chunk_time
+                else:
+                    silent_time = 0
 
-                if time.time() - start_time > 30:
+                if total_time > 0.5 and silent_time >= SILENCE_DURATION:
                     break
 
-                if time.time() - last_sound_time > 1.5:
-                    break
+            if not audio_chunks:
+                print("[AUDIO] No audio captured.", flush=True)
+                return None
+
+            audio_data = np.concatenate(audio_chunks)
+
+            with wave.open(filename, "wb") as wf:
+                wf.setnchannels(CHANNELS)
+                wf.setsampwidth(SAMPLE_WIDTH)
+                wf.setframerate(RATE)
+                wf.writeframes(audio_data.tobytes())
+
+            print(f"[AUDIO] Saved recording to {filename}", flush=True)
+
+            self.play_sound(self.get_random_sound(ack_sounds_dir))
+
+            return filename
+
+        except Exception as e:
+            print(f"[AUDIO ERROR] Recording failed: {e}", flush=True)
+            return None
 
         finally:
             try:
@@ -753,22 +759,6 @@ class BotGUI:
                     process.kill()
                 except Exception:
                     pass
-
-        if not audio_data:
-            print("[AUDIO] No audio recorded.", flush=True)
-            return None
-
-        with wave.open(filename, "wb") as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(RATE)
-            wf.writeframes(bytes(audio_data))
-
-        print(f"[AUDIO] Saved recording to {filename}", flush=True)
-
-        self.play_sound(self.get_random_sound(ack_sounds_dir))
-
-        return filename
 
     def transcribe_audio(self, filename):
         print("Transcribing...", flush=True)
