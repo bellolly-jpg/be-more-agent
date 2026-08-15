@@ -666,87 +666,124 @@ class BotGUI:
                     process.kill()
                 except Exception:
                     pass
-        def record_voice_adaptive(self, filename="input.wav"):
-        print("Recording (ALSA)...", flush=True)
+       def record_voice_adaptive(self, filename="input.wav"):
+    """Record the user's question using the same ALSA microphone as the wake word."""
 
-        RATE = 16000
-        CHANNELS = 1
-        SAMPLE_WIDTH = 2
-        CHUNK_SIZE = 800
-        SILENCE_THRESHOLD = 500
-        SILENCE_DURATION = 1.5
-        MAX_RECORD_TIME = 10.0
+    print("[AUDIO] Recording question...", flush=True)
 
-        alsa_device = "plughw:3,0"
+    RATE = 16000
+    CHANNELS = 1
+    SAMPLE_WIDTH = 2
+
+    # This is the microphone that successfully detected "Hey BMO"
+    alsa_device = "plughw:3,0"
+
+    CHUNK_SAMPLES = 800       # 50 ms at 16 kHz
+    CHUNK_BYTES = CHUNK_SAMPLES * SAMPLE_WIDTH
+
+    # Voice detection settings
+    START_THRESHOLD = 500
+    SILENCE_THRESHOLD = 350
+    SILENCE_DURATION = 1.3
+    MAX_RECORD_TIME = 15.0
+
+    process = None
+    audio_chunks = []
+
+    speech_started = False
+    silence_time = 0.0
+    total_time = 0.0
+
+    try:
+        # Give the wake-word recorder a moment to close
+        time.sleep(0.3)
+
+        print(f"[AUDIO] Starting question recorder: {alsa_device}", flush=True)
 
         process = subprocess.Popen(
             [
                 "arecord",
                 "-D", alsa_device,
                 "-f", "S16_LE",
-                "-c", "1",
+                "-c", str(CHANNELS),
                 "-r", str(RATE),
                 "-t", "raw",
                 "-q"
             ],
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             bufsize=0
         )
 
-        audio_chunks = []
-        silent_time = 0
-        total_time = 0
+        print("[AUDIO] Speak now...", flush=True)
 
-        try:
-            print("[AUDIO] Recording from USB microphone...", flush=True)
+        while total_time < MAX_RECORD_TIME:
 
-            while total_time < MAX_RECORD_TIME:
+            data = process.stdout.read(CHUNK_BYTES)
 
-                data = process.stdout.read(CHUNK_SIZE * SAMPLE_WIDTH)
+            if not data:
+                print("[AUDIO] Microphone stopped.", flush=True)
+                break
 
-                if not data:
-                    break
+            if len(data) < CHUNK_BYTES:
+                continue
 
-                audio = np.frombuffer(data, dtype=np.int16)
-                audio_chunks.append(audio.copy())
+            audio_data = np.frombuffer(data, dtype=np.int16)
 
-                volume = np.max(np.abs(audio)) if len(audio) else 0
+            if len(audio_data) != CHUNK_SAMPLES:
+                continue
 
-                chunk_time = len(audio) / RATE
-                total_time += chunk_time
+            # Calculate volume
+            volume = int(np.max(np.abs(audio_data)))
+
+            print(
+                f"\r[AUDIO] Volume: {volume:5d}   ",
+                end="",
+                flush=True
+            )
+
+            # Always keep the audio while recording.
+            # This means we don't accidentally cut off the beginning.
+            audio_chunks.append(data)
+
+            if not speech_started:
+
+                if volume > START_THRESHOLD:
+                    speech_started = True
+                    silence_time = 0.0
+
+                    print(
+                        "\n[AUDIO] Speech detected!",
+                        flush=True
+                    )
+
+            else:
 
                 if volume < SILENCE_THRESHOLD:
-                    silent_time += chunk_time
+                    silence_time += CHUNK_SAMPLES / RATE
+
+                    if silence_time >= SILENCE_DURATION:
+                        print(
+                            "\n[AUDIO] Finished listening.",
+                            flush=True
+                        )
+                        break
                 else:
-                    silent_time = 0
+                    silence_time = 0.0
 
-                if total_time > 0.5 and silent_time >= SILENCE_DURATION:
-                    break
+            total_time += CHUNK_SAMPLES / RATE
 
-            if not audio_chunks:
-                print("[AUDIO] No audio captured.", flush=True)
-                return None
+        print("", flush=True)
 
-            audio_data = np.concatenate(audio_chunks)
+    except Exception as e:
+        print(
+            f"\n[AUDIO ERROR] Question recording failed: {e}",
+            flush=True
+        )
+        return None
 
-            with wave.open(filename, "wb") as wf:
-                wf.setnchannels(CHANNELS)
-                wf.setsampwidth(SAMPLE_WIDTH)
-                wf.setframerate(RATE)
-                wf.writeframes(audio_data.tobytes())
-
-            print(f"[AUDIO] Saved recording to {filename}", flush=True)
-
-            self.play_sound(self.get_random_sound(ack_sounds_dir))
-
-            return filename
-
-        except Exception as e:
-            print(f"[AUDIO ERROR] Recording failed: {e}", flush=True)
-            return None
-
-        finally:
+    finally:
+        if process is not None:
             try:
                 process.terminate()
                 process.wait(timeout=1)
@@ -756,6 +793,39 @@ class BotGUI:
                 except Exception:
                     pass
 
+    if not audio_chunks:
+        print("[AUDIO] No audio recorded.", flush=True)
+        return None
+
+    # Combine all raw audio
+    audio_data = b"".join(audio_chunks)
+
+    # Save as a proper WAV file
+    try:
+        with wave.open(filename, "wb") as wf:
+            wf.setnchannels(CHANNELS)
+            wf.setsampwidth(SAMPLE_WIDTH)
+            wf.setframerate(RATE)
+            wf.writeframes(audio_data)
+
+        print(
+            f"[AUDIO] Saved recording to {filename}",
+            flush=True
+        )
+
+    except Exception as e:
+        print(
+            f"[AUDIO ERROR] Could not save WAV: {e}",
+            flush=True
+        )
+        return None
+
+    # Play the acknowledgement sound
+    self.play_sound(
+        self.get_random_sound(ack_sounds_dir)
+    )
+
+    return filename
     def transcribe_audio(self, filename):
         print("Transcribing...", flush=True)
         try:
