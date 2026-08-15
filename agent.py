@@ -562,25 +562,46 @@ class BotGUI:
         self.play_sound(self.get_random_sound(greeting_sounds_dir))
         print("Models loaded.", flush=True)
 
-               def detect_wake_word_or_ptt(self):
-        self.set_state(BotStates.IDLE, "Waiting...")
+              def detect_wake_word_or_ptt(self):
+    """Wait for Hey BMO using the working ALSA microphone."""
+
+    self.set_state(BotStates.IDLE, "Waiting...")
+    self.ptt_event.clear()
+
+    if self.oww_model:
+        self.oww_model.reset()
+
+    # If there is no wake-word model, wait for PTT
+    if self.oww_model is None:
+        self.ptt_event.wait()
         self.ptt_event.clear()
+        return "PTT"
 
-        if self.oww_model:
-            self.oww_model.reset()
+    try:
+        print("[AUDIO] Starting ALSA wake-word listener...", flush=True)
 
-        try:
-            self._listen_loop()
-            return "WAKE"
+        # Use the ALSA listener directly.
+        # This avoids sounddevice/PortAudio completely.
+        self._listen_loop()
 
-        except StopIteration as e:
-            return str(e)
+        print("[AUDIO] Wake word listener returned.", flush=True)
+        return "WAKE"
 
-        except Exception as e:
-            print(f"[AUDIO] Wake word listener error: {e}", flush=True)
-            self.ptt_event.wait()
-            self.ptt_event.clear()
+    except StopIteration as e:
+        print(f"[AUDIO] Listener stopped: {e}", flush=True)
+
+        if str(e) == "PTT":
             return "PTT"
+
+        return "WAKE"
+
+    except Exception as e:
+        print(f"[AUDIO ERROR] Wake-word listener failed: {e}", flush=True)
+
+        # Don't fall back to the broken sounddevice system.
+        self.ptt_event.wait()
+        self.ptt_event.clear()
+        return "PTT"
 
     def _listen_loop(self):
         """Listen to the same ALSA microphone used by the wake word."""
