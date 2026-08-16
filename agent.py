@@ -582,7 +582,7 @@ class BotGUI:
 
         return "WAKE"
 
-   def _listen_loop(self):
+def _listen_loop(self):
     """Listen to the same ALSA microphone used by the wake word."""
 
     RATE = 16000
