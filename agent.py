@@ -582,51 +582,68 @@ class BotGUI:
 
         return "WAKE"
 
-    def _listen_loop(self):
-        """Listen to the same ALSA microphone used by the wake word."""
+   def _listen_loop(self):
+    """Listen to the same ALSA microphone used by the wake word."""
 
-        RATE = 16000
-        CHANNELS = 1
-        SAMPLE_WIDTH = 2
-        BYTES_PER_CHUNK = 1280 * SAMPLE_WIDTH
+    RATE = 16000
+    CHANNELS = 1
+    SAMPLE_WIDTH = 2
+    SAMPLES_PER_CHUNK = 1280
+    BYTES_PER_CHUNK = SAMPLES_PER_CHUNK * SAMPLE_WIDTH
 
-        alsa_device = "plughw:3,0"
+    alsa_device = "plughw:3,0"
 
-        print(f"[AUDIO] Starting ALSA microphone: {alsa_device}", flush=True)
+    print(f"[AUDIO] Starting ALSA microphone: {alsa_device}", flush=True)
 
-        process = subprocess.Popen(
-            [
-                "arecord",
-                "-D", alsa_device,
-                "-f", "S16_LE",
-                "-c", str(CHANNELS),
-                "-r", str(RATE),
-                "-t", "raw",
-                "-q"
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            bufsize=0
-        )
+    process = subprocess.Popen(
+        [
+            "arecord",
+            "-D", alsa_device,
+            "-f", "S16_LE",
+            "-c", str(CHANNELS),
+            "-r", str(RATE),
+            "-t", "raw",
+            "-q"
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        bufsize=0
+    )
 
-        try:
-            print("[AUDIO] Listening for wake word...", flush=True)
+    buffer = bytearray()
 
-            while True:
-                if self.ptt_event.is_set():
-                    self.ptt_event.clear()
-                    raise StopIteration("PTT")
+    try:
+        print("[AUDIO] Listening for wake word...", flush=True)
 
-                data = process.stdout.read(BYTES_PER_CHUNK)
+        while True:
+            if self.ptt_event.is_set():
+                self.ptt_event.clear()
+                return "PTT"
 
-                if not data or len(data) < BYTES_PER_CHUNK:
+            # Read whatever audio is currently available.
+            chunk = process.stdout.read(BYTES_PER_CHUNK)
+
+            if not chunk:
+                if process.poll() is not None:
                     raise RuntimeError(
-                        f"ALSA microphone stopped. Received {len(data)} bytes."
+                        "ALSA microphone process stopped."
                     )
+                continue
 
-                audio_data = np.frombuffer(data, dtype=np.int16)
+            buffer.extend(chunk)
 
-                if len(audio_data) != 1280:
+            # Only process complete 1280-sample chunks.
+            while len(buffer) >= BYTES_PER_CHUNK:
+
+                data = bytes(buffer[:BYTES_PER_CHUNK])
+                del buffer[:BYTES_PER_CHUNK]
+
+                audio_data = np.frombuffer(
+                    data,
+                    dtype=np.int16
+                )
+
+                if len(audio_data) != SAMPLES_PER_CHUNK:
                     continue
 
                 current_max = np.max(np.abs(audio_data))
@@ -657,15 +674,15 @@ class BotGUI:
                             self.oww_model.reset()
                             return
 
-        finally:
+    finally:
+        try:
+            process.terminate()
+            process.wait(timeout=1)
+        except Exception:
             try:
-                process.terminate()
-                process.wait(timeout=1)
+                process.kill()
             except Exception:
-                try:
-                    process.kill()
-                except Exception:
-                    pass
+                pass
     def record_voice_adaptive(self, filename="input.wav"):
         print("[AUDIO] Recording question...", flush=True)
 
