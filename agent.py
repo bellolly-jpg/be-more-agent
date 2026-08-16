@@ -563,7 +563,7 @@ class BotGUI:
         print("Models loaded.", flush=True)
 
     def detect_wake_word_or_ptt(self):
-    """Wait for Hey BMO using the working ALSA microphone."""
+        """Wait for Hey BMO using the working ALSA microphone."""
 
     self.set_state(BotStates.IDLE, "Waiting...")
     self.ptt_event.clear()
