@@ -575,7 +575,7 @@ class BotGUI:
     if self.oww_model is None:
         self.ptt_event.wait()
         self.ptt_event.clear()
-        return "PTT"
+            return "PTT"
 
     try:
         print("[AUDIO] Starting ALSA wake-word listener...", flush=True)
