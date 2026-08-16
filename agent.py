@@ -687,7 +687,7 @@ class BotGUI:
                     process.kill()
                 except Exception:
                     pass
-           def record_voice_adaptive(self, filename="input.wav"):
+    def record_voice_adaptive(self, filename="input.wav"):
         print("[AUDIO] Recording question...", flush=True)
 
         try:
