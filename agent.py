@@ -562,7 +562,7 @@ class BotGUI:
         self.play_sound(self.get_random_sound(greeting_sounds_dir))
         print("Models loaded.", flush=True)
 
-              def detect_wake_word_or_ptt(self):
+    def detect_wake_word_or_ptt(self):
     """Wait for Hey BMO using the working ALSA microphone."""
 
     self.set_state(BotStates.IDLE, "Waiting...")
